@@ -1,0 +1,84 @@
+# Load Libraries
+library(caret)
+library(e1071)
+library(rpart)
+library(randomForest)
+library(pROC)
+library(ggplot2)
+
+set.seed(123)
+
+# Load Data
+wbcd <- read.csv("wisc_bc_data.csv", stringsAsFactors = FALSE)
+wbcd <- wbcd[-1]
+
+wbcd$diagnosis <- factor(wbcd$diagnosis, levels = c("B", "M"),
+                         labels = c("Benign", "Malignant"))
+
+# Normalize
+preProcValues <- preProcess(wbcd[, -1], method = c("center", "scale"))
+wbcd_scaled <- predict(preProcValues, wbcd[, -1])
+wbcd_final <- data.frame(diagnosis = wbcd$diagnosis, wbcd_scaled)
+
+# Train-Test Split (Randomized)
+trainIndex <- createDataPartition(wbcd_final$diagnosis, p = 0.8, list = FALSE)
+trainData <- wbcd_final[trainIndex, ]
+testData <- wbcd_final[-trainIndex, ]
+
+# Cross Validation Setup
+control <- trainControl(method = "cv",
+                        number = 10,
+                        classProbs = TRUE,
+                        summaryFunction = twoClassSummary)
+
+# 1️⃣ Logistic Regression
+model_lr <- train(diagnosis ~ ., data = trainData,
+                  method = "glm",
+                  family = "binomial",
+                  trControl = control,
+                  metric = "ROC")
+
+# 2️⃣ KNN (tuned)
+model_knn <- train(diagnosis ~ ., data = trainData,
+                   method = "knn",
+                   tuneLength = 10,
+                   trControl = control,
+                   metric = "ROC")
+
+# 3️⃣ Decision Tree
+model_dt <- train(diagnosis ~ ., data = trainData,
+                  method = "rpart",
+                  tuneLength = 10,
+                  trControl = control,
+                  metric = "ROC")
+
+# 4️⃣ Random Forest
+model_rf <- train(diagnosis ~ ., data = trainData,
+                  method = "rf",
+                  tuneLength = 5,
+                  trControl = control,
+                  metric = "ROC")
+
+# 5️⃣ SVM
+model_svm <- train(diagnosis ~ ., data = trainData,
+                   method = "svmRadial",
+                   tuneLength = 10,
+                   trControl = control,
+                   metric = "ROC")
+
+# Compare Models
+results <- resamples(list(
+  LR = model_lr,
+  KNN = model_knn,
+  DT = model_dt,
+  RF = model_rf,
+  SVM = model_svm
+))
+
+summary(results)
+
+# ROC Curve for Best Model (example: SVM)
+svm_pred <- predict(model_svm, testData, type = "prob")
+roc_obj <- roc(testData$diagnosis, svm_pred$Malignant)
+plot(roc_obj, col="blue")
+auc(roc_obj)
