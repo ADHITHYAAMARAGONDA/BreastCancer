@@ -1,0 +1,192 @@
+🎓 PPT CONTENT (Slide by Slide)
+🟦 Slide 1 – Title Slide
+Title:
+Breast Cancer Detection Using Machine Learning Algorithms
+
+Subtitle:
+A Comparative Study of LR, KNN, DT, RF, and SVM
+
+Presented by:
+Your Name
+Course Name
+Institution Name
+Date
+
+🟦 Slide 2 – Background
+Introduction
+Breast cancer is one of the leading causes of cancer-related deaths among women worldwide.
+
+Early detection significantly increases survival rate.
+
+Traditional diagnosis depends on biopsy and medical imaging.
+
+Machine Learning enables automated prediction using clinical data.
+
+🟦 Slide 3 – Problem Statement
+Problem Statement
+Although many studies apply machine learning to breast cancer detection:
+
+Different studies use different experimental setups
+
+Many focus only on accuracy
+
+Lack of standardized comparison under identical conditions
+
+Limited discussion on confusion matrix metrics
+
+Therefore, a comprehensive comparative framework is required.
+
+🟦 Slide 4 – Research Objectives
+Objectives of the Study
+Compare multiple ML algorithms on the same dataset
+
+Use standardized preprocessing and evaluation
+
+Evaluate using multiple performance metrics
+
+Identify the most reliable classifier
+
+🟦 Slide 5 – Literature Review
+Related Research
+Recent studies (2021–2025) have:
+
+Used Wisconsin Breast Cancer Dataset
+
+Applied Logistic Regression, KNN, Decision Tree
+
+Achieved accuracy between 92%–99%
+
+Identified Logistic Regression or SVM as top performers
+
+However:
+
+Most studies do not compare all major classifiers together.
+
+🟦 Slide 6 – Research Gap
+Identified Research Gap
+No unified evaluation framework
+
+Limited multi-metric comparison
+
+Inconsistent preprocessing techniques
+
+Lack of statistical validation
+
+This study addresses these limitations.
+
+🟦 Slide 7 – Dataset Description
+Dataset Used
+Wisconsin Breast Cancer Diagnostic Dataset
+
+Total samples: 569
+
+Features: 30 numerical attributes
+
+Classes:
+
+Malignant (212)
+
+Benign (357)
+
+No missing values
+
+Binary classification problem
+
+🟦 Slide 8 – Methodology
+Proposed Methodology
+Data preprocessing (normalization)
+
+Train-test split (80–20)
+
+Model implementation
+
+10-fold Cross Validation
+
+Performance evaluation
+
+🟦 Slide 9 – Algorithms Used
+Machine Learning Models
+Logistic Regression (LR)
+
+K-Nearest Neighbors (KNN)
+
+Decision Tree (DT)
+
+Random Forest (RF)
+
+Support Vector Machine (SVM)
+
+All models trained under identical conditions.
+
+🟦 Slide 10 – Evaluation Metrics
+Performance Metrics
+Accuracy
+
+Precision
+
+Recall
+
+F1-Score
+
+ROC-AUC
+
+Confusion Matrix
+
+Error Rate
+
+These metrics provide comprehensive evaluation.
+
+🟦 Slide 11 – Experimental Results (Table Slide)
+Model Performance Comparison
+Model	Accuracy	Precision	Recall	F1-Score
+LR	XX%	XX%	XX%	XX%
+KNN	XX%	XX%	XX%	XX%
+DT	XX%	XX%	XX%	XX%
+RF	XX%	XX%	XX%	XX%
+SVM	XX%	XX%	XX%	XX%
+(Replace with your actual results)
+
+🟦 Slide 12 – Confusion Matrix Example
+Confusion Matrix (Best Model)
+True Positive (TP)
+
+True Negative (TN)
+
+False Positive (FP)
+
+False Negative (FN)
+
+Explain briefly what each means.
+
+🟦 Slide 13 – Discussion
+Analysis of Results
+SVM achieved highest overall accuracy.
+
+Random Forest showed stable performance.
+
+Logistic Regression performed competitively.
+
+Decision Tree showed interpretability advantage.
+
+KNN sensitive to choice of k value.
+
+🟦 Slide 14 – Conclusion
+Conclusion
+Machine Learning effectively detects breast cancer.
+
+SVM/RF demonstrated superior performance.
+
+Standardized evaluation improves reliability.
+
+Results support ML-assisted clinical diagnosis.
+
+🟦 Slide 15 – Future Work
+Future Scope
+Apply Deep Learning models
+
+Use larger medical datasets
+
+Deploy as clinical decision-support tool
+
+Real-time hospital integration
+
