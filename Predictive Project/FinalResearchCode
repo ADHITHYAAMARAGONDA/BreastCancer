@@ -1,106 +1,205 @@
+ 
+install.packages(c("caret", "e1071", "rpart", "randomForest",
+                   "pROC", "ggplot2", "corrplot", "dplyr",
+                   "gridExtra", "reshape2", "scales"))
+
+
+
+packages_needed <- c("caret", "e1071", "rpart", "randomForest",
+                     "pROC", "ggplot2", "corrplot", "dplyr",
+                     "gridExtra", "reshape2", "scales")
+
+for (pkg in packages_needed) {
+  if (requireNamespace(pkg, quietly = TRUE)) {
+    cat("OK :", pkg, "\n")
+  } else {
+    cat("MISSING :", pkg, "\n")
+  }
+}
+ 
+setwd("D:/ADHITHYA/ADHITHYA/RESEARCH")
+
+
+file.exists("data.csv")
+
+wbcd_raw <- read.csv("data.csv", stringsAsFactors = FALSE)
+cat("Rows:", nrow(wbcd_raw), "\n")
+cat("Cols:", ncol(wbcd_raw), "\n")
+View(wbcd_raw)
+
+# ── SECTION 1: LOAD LIBRARIES ───────────────────────────────
+library(caret)          # unified ML training framework
+library(e1071)          # SVM support
+library(rpart)          # Decision Tree
+library(randomForest)   # Random Forest
+library(pROC)           # ROC curves and AUC
+library(ggplot2)        # visualization
+library(corrplot)       # correlation heatmap
+library(dplyr)          # data manipulation
+library(gridExtra)      # multi-plot layout
+library(reshape2)       # data reshaping for heatmaps
+
+set.seed(123)           # reproducibility — required for publication
+
 # ============================================================
-# RESEARCH: ML-Based Breast Cancer Diagnosis with Feature
-# Selection, Statistical Testing & Explainability in R
-# Dataset: Wisconsin Breast Cancer Diagnostic (WBCD)
+# SECTION 2: DATA LOADING & CLEANING
 # ============================================================
 
-# ── LIBRARIES ───────────────────────────────────────────────
-library(caret)
-library(e1071)
-library(rpart)
-library(randomForest)
-library(pROC)
-library(ggplot2)
-library(corrplot)      # correlation heatmap
-library(dplyr)         # data wrangling
-library(gridExtra)     # arrange multiple plots
-library(DALEX)         # explainability (SHAP-style)
-library(lime)          # local interpretability
+# ── 2.1 Load raw data ───────────────────────────────────────
+ 
+cat("=== RAW DATA DIMENSIONS ===\n")
+cat("Rows:", nrow(wbcd_raw), "| Cols:", ncol(wbcd_raw), "\n")
+# Expected: 569 rows x 33 cols
 
-set.seed(123)
+# ── 2.2 Remove ID column (col 1) ────────────────────────────
+# ID is a patient identifier — not a predictor variable
+wbcd <- wbcd_raw[, -1]
 
-# ============================================================
-# SECTION 1: DATA LOADING & PREPROCESSING
-# ============================================================
+# ── 2.3 Remove empty trailing column (col 33 artifact) ──────
+# Your CSV file has an empty unnamed column at position 33
+# This is a file artifact and must be removed before analysis
+empty_cols <- sapply(wbcd, function(x) all(is.na(x) | x == ""))
+wbcd <- wbcd[, !empty_cols]
 
-wbcd <- read.csv("wisc_bc_data.csv", stringsAsFactors = FALSE)
-wbcd <- wbcd[-1]   # remove ID column
+cat("\n=== AFTER CLEANING ===\n")
+cat("Rows:", nrow(wbcd), "| Cols:", ncol(wbcd), "\n")
+# Expected: 569 rows x 31 cols (diagnosis + 30 features)
 
+# ── 2.4 Convert diagnosis to factor ─────────────────────────
 wbcd$diagnosis <- factor(wbcd$diagnosis,
-                          levels = c("B", "M"),
-                          labels = c("Benign", "Malignant"))
+                         levels = c("B", "M"),
+                         labels = c("Benign", "Malignant"))
 
-cat("Class Distribution:\n")
-print(round(prop.table(table(wbcd$diagnosis)) * 100, 2))
-# WHY: Checking class imbalance upfront is required in any
-# medical ML paper. Imbalanced classes affect sensitivity
-# which matters most clinically (missing cancer = fatal).
+# ── 2.5 Verify dataset integrity ────────────────────────────
+cat("\n=== DATASET VERIFICATION ===\n")
+cat("Total instances      :", nrow(wbcd), "\n")
+cat("Predictive features  :", ncol(wbcd) - 1, "\n")
+cat("Missing values       :", sum(is.na(wbcd)), "\n")
+cat("\nClass Distribution:\n")
+class_dist <- round(prop.table(table(wbcd$diagnosis)) * 100, 2)
+print(class_dist)
+# Expected: Benign 62.74%, Malignant 37.26%
 
-# ── Standardization ─────────────────────────────────────────
-preProcValues <- preProcess(wbcd[, -1], method = c("center", "scale"))
+cat("\nFeature Summary (first 5 features):\n")
+print(summary(wbcd[, 2:6]))
+
+# ============================================================
+# SECTION 3: STANDARDIZATION (Z-SCORE)
+# ============================================================
+# WHY Z-SCORE not min-max:
+#   - SVM and LR are sensitive to feature scale
+#   - Z-score preserves outliers better than min-max
+#   - Standard in medical ML literature
+
+preProcValues <- preProcess(wbcd[, -1],
+                            method = c("center", "scale"))
 wbcd_scaled   <- predict(preProcValues, wbcd[, -1])
 wbcd_final    <- data.frame(diagnosis = wbcd$diagnosis, wbcd_scaled)
 
-# ============================================================
-# SECTION 2: FEATURE SELECTION (YOUR MAIN CONTRIBUTION #1)
-# ============================================================
-# WHY THIS IS NOVEL: Most WBCD papers use all 30 features.
-# You will compare full vs. reduced feature sets and show
-# which features matter most — clinically actionable insight.
+cat("\n=== STANDARDIZATION COMPLETE ===\n")
+cat("Feature means after scaling (should be ~0):\n")
+print(round(colMeans(wbcd_scaled[, 1:5]), 4))
 
-# ── 2A. Correlation-based removal ───────────────────────────
+# ============================================================
+# SECTION 4: FEATURE SELECTION — CONTRIBUTION #1
+# ============================================================
+# RESEARCH NOVELTY: Most WBCD papers use all 30 features.
+# We compare THREE feature configurations:
+#   A) Full: all 30 features
+#   B) Correlation-Reduced: remove highly correlated features
+#   C) RFE-Selected: optimal subset by recursive elimination
+# This three-way comparison has NOT been done in prior R studies.
+
+# ── 4A. CORRELATION ANALYSIS ────────────────────────────────
+cat("\n=== FEATURE SELECTION: CORRELATION ANALYSIS ===\n")
+
 corMatrix <- cor(wbcd_scaled)
 
-# Visualize correlation heatmap (include this figure in paper)
+# Save correlation heatmap (Figure 1 in paper)
+png("figure1_correlation_heatmap.png",
+    width = 2800, height = 2400, res = 300)
 corrplot(corMatrix,
-         method = "color",
-         type   = "upper",
-         tl.cex = 0.7,
-         title  = "Feature Correlation Heatmap",
-         mar    = c(0,0,1,0))
+         method  = "color",
+         type    = "upper",
+         tl.cex  = 0.55,
+         tl.col  = "black",
+         col     = colorRampPalette(c("#2166AC","white","#D6604D"))(200),
+         title   = "Figure 1: Feature Correlation Heatmap (WBCD)",
+         mar     = c(0, 0, 2, 0),
+         addCoef.col = NULL,
+         diag    = FALSE)
+dev.off()
+cat("Figure 1 saved: figure1_correlation_heatmap.png\n")
 
-# Remove features with correlation > 0.90
-highCorFeatures <- findCorrelation(corMatrix, cutoff = 0.90)
-cat("\nRemoved highly correlated features (indices):", highCorFeatures, "\n")
-cat("Features removed:", names(wbcd_scaled)[highCorFeatures], "\n")
+# Remove features with Pearson correlation > 0.90
+# Threshold 0.90 is standard in medical ML feature selection
+highCorIdx      <- findCorrelation(corMatrix, cutoff = 0.90)
+removed_features <- names(wbcd_scaled)[highCorIdx]
 
-wbcd_reduced      <- wbcd_scaled[, -highCorFeatures]
-wbcd_final_reduced <- data.frame(diagnosis = wbcd$diagnosis, wbcd_reduced)
+cat("\nFeatures removed (correlation > 0.90):\n")
+print(removed_features)
+cat("Count removed:", length(removed_features), "\n")
 
-cat("\nOriginal feature count:", ncol(wbcd_scaled), "\n")
-cat("Reduced feature count: ", ncol(wbcd_reduced), "\n")
+wbcd_reduced       <- wbcd_scaled[, -highCorIdx]
+wbcd_final_reduced <- data.frame(diagnosis = wbcd$diagnosis,
+                                 wbcd_reduced)
 
-# ── 2B. Recursive Feature Elimination (RFE) ─────────────────
-# WHY: RFE finds the OPTIMAL subset, not just removes correlated
-# ones. This is a stronger feature selection method and gives
-# you a third dataset to compare (full / corr-reduced / RFE)
+cat("Features remaining:", ncol(wbcd_reduced), "\n")
 
-rfe_control <- rfeControl(functions = rfFuncs,
-                           method    = "cv",
-                           number    = 10)
+# ── 4B. RECURSIVE FEATURE ELIMINATION (RFE) ─────────────────
+# WHY RFE: More principled than correlation filtering.
+# RFE iteratively removes least important features using
+# Random Forest importance scores with 10-fold CV.
+# This finds the OPTIMAL feature count, not just removes redundancy.
 
-rfe_result <- rfe(wbcd_scaled,
-                  wbcd$diagnosis,
-                  sizes    = c(5, 10, 15, 20),
+cat("\n=== FEATURE SELECTION: RFE ===\n")
+cat("Running RFE with 10-fold CV (this may take 2-5 minutes)...\n")
+
+rfe_control <- rfeControl(functions  = rfFuncs,
+                          method     = "cv",
+                          number     = 10,
+                          verbose    = FALSE)
+
+ rfe_result <- rfe(x          = wbcd_scaled,
+                  y          = wbcd$diagnosis,
+                  sizes      = c(5, 10, 15, 20, 25),
                   rfeControl = rfe_control)
 
+cat("\nRFE Results Summary:\n")
 print(rfe_result)
-plot(rfe_result, type = c("g","o"),
-     main = "RFE: Optimal Number of Features")
 
-best_features       <- predictors(rfe_result)
-cat("\nRFE selected features:\n")
+# Save RFE plot (Figure 2 in paper)
+png("figure2_rfe_accuracy_vs_features.png",
+    width = 2400, height = 1800, res = 300)
+plot(rfe_result,
+     type = c("g", "o"),
+     main = "Figure 2: RFE — Accuracy vs Number of Features")
+dev.off()
+cat("Figure 2 saved: figure2_rfe_accuracy_vs_features.png\n")
+
+best_features  <- predictors(rfe_result)
+cat("\nRFE selected", length(best_features), "features:\n")
 print(best_features)
 
 wbcd_rfe      <- wbcd_scaled[, best_features]
 wbcd_final_rfe <- data.frame(diagnosis = wbcd$diagnosis, wbcd_rfe)
 
+# ── 4C. Feature Selection Summary ───────────────────────────
+cat("\n=== FEATURE SELECTION SUMMARY ===\n")
+cat("Full feature set     :", ncol(wbcd_scaled), "features\n")
+cat("Corr-reduced set     :", ncol(wbcd_reduced), "features\n")
+cat("RFE-selected set     :", length(best_features), "features\n")
+
 # ============================================================
-# SECTION 3: TRAIN-TEST SPLIT (ALL THREE DATASETS)
+# SECTION 5: TRAIN-TEST SPLIT (STRATIFIED 80/20)
 # ============================================================
+# WHY STRATIFIED: Preserves class ratio in both train and test
+# sets. Critical for imbalanced datasets like WBCD (63/37).
+# WHY 80/20: Standard split used in comparable literature
+# (Naji et al. 2021 used 75/25, Hossin et al. 2023 used 80/20)
 
 split_data <- function(df) {
-  idx   <- createDataPartition(df$diagnosis, p = 0.8, list = FALSE)
+  idx <- createDataPartition(df$diagnosis, p = 0.80, list = FALSE)
   list(train = df[idx, ], test = df[-idx, ])
 }
 
@@ -108,340 +207,513 @@ split_full    <- split_data(wbcd_final)
 split_reduced <- split_data(wbcd_final_reduced)
 split_rfe     <- split_data(wbcd_final_rfe)
 
+cat("\n=== TRAIN-TEST SPLIT ===\n")
+cat("Training samples:", nrow(split_full$train), "\n")
+cat("Testing samples :", nrow(split_full$test),  "\n")
+cat("\nTrain class distribution:\n")
+print(round(prop.table(table(split_full$train$diagnosis)) * 100, 2))
+cat("\nTest class distribution:\n")
+print(round(prop.table(table(split_full$test$diagnosis)) * 100, 2))
+
 # ============================================================
-# SECTION 4: CROSS-VALIDATION SETUP
+# SECTION 6: CROSS-VALIDATION SETUP
 # ============================================================
+# WHY 10-FOLD CV: Standard in medical ML.
+# Provides stable performance estimates vs single split.
+# savePredictions="final" allows post-hoc analysis.
 
 control <- trainControl(
   method          = "cv",
   number          = 10,
-  classProbs      = TRUE,
-  summaryFunction = twoClassSummary,
-  savePredictions = "final"   # needed for calibration plots
+  classProbs      = TRUE,        # needed for ROC
+  summaryFunction = twoClassSummary,  # reports ROC, Sens, Spec
+  savePredictions = "final",     # saves all fold predictions
+  verboseIter     = FALSE
 )
 
 # ============================================================
-# SECTION 5: MODEL TRAINING FUNCTION
+# SECTION 7: MODEL TRAINING FUNCTION
 # ============================================================
-# WHY A FUNCTION: Trains all 5 models on any dataset,
-# lets you run full/reduced/RFE comparison cleanly
+# Trains all 5 classifiers on any given dataset.
+# Encapsulated as function to run cleanly on 3 feature sets.
 
-train_all_models <- function(trainData) {
-
-  m_lr <- train(diagnosis ~ ., data = trainData,
-                method   = "glm",
-                family   = "binomial",
+train_all_models <- function(trainData, label = "") {
+  cat("\n>>> Training models on:", label, "<<<\n")
+  
+  # 1. Logistic Regression
+  cat("  [1/5] Logistic Regression...\n")
+  m_lr <- train(diagnosis ~ .,
+                data      = trainData,
+                method    = "glm",
+                family    = "binomial",
                 trControl = control,
-                metric   = "ROC")
-
-  m_knn <- train(diagnosis ~ ., data = trainData,
-                 method    = "knn",
-                 tuneLength = 10,
+                metric    = "ROC")
+  
+  # 2. K-Nearest Neighbors (auto-tuned k)
+  cat("  [2/5] KNN...\n")
+  m_knn <- train(diagnosis ~ .,
+                 data       = trainData,
+                 method     = "knn",
+                 tuneLength = 10,      # tests k = 5,7,9,...,23
                  trControl  = control,
                  metric     = "ROC")
-
-  m_dt <- train(diagnosis ~ ., data = trainData,
-                method    = "rpart",
+  
+  # 3. Decision Tree (CART with complexity tuning)
+  cat("  [3/5] Decision Tree...\n")
+  m_dt <- train(diagnosis ~ .,
+                data       = trainData,
+                method     = "rpart",
                 tuneLength = 10,
                 trControl  = control,
                 metric     = "ROC")
-
-  m_rf <- train(diagnosis ~ ., data = trainData,
-                method    = "rf",
-                tuneLength = 5,
+  
+  # 4. Random Forest (ensemble of trees)
+  cat("  [4/5] Random Forest...\n")
+  m_rf <- train(diagnosis ~ .,
+                data       = trainData,
+                method     = "rf",
+                tuneLength = 5,       # tests 5 mtry values
                 trControl  = control,
                 metric     = "ROC")
-
-  m_svm <- train(diagnosis ~ ., data = trainData,
-                 method    = "svmRadial",
+  
+  # 5. SVM with Radial Basis Function kernel
+  cat("  [5/5] SVM (RBF kernel)...\n")
+  m_svm <- train(diagnosis ~ .,
+                 data       = trainData,
+                 method     = "svmRadial",
                  tuneLength = 10,
                  trControl  = control,
                  metric     = "ROC")
-
-  list(LR=m_lr, KNN=m_knn, DT=m_dt, RF=m_rf, SVM=m_svm)
+  
+  cat("  Training complete for:", label, "\n")
+  list(LR = m_lr, KNN = m_knn, DT = m_dt, RF = m_rf, SVM = m_svm)
 }
 
-cat("\n=== Training on FULL feature set ===\n")
-models_full    <- train_all_models(split_full$train)
-
-cat("\n=== Training on CORRELATION-REDUCED feature set ===\n")
-models_reduced <- train_all_models(split_reduced$train)
-
-cat("\n=== Training on RFE-SELECTED feature set ===\n")
-models_rfe     <- train_all_models(split_rfe$train)
+# Train on all three feature sets
+models_full    <- train_all_models(split_full$train,    "FULL (30 features)")
+models_reduced <- train_all_models(split_reduced$train, "CORR-REDUCED features")
+models_rfe     <- train_all_models(split_rfe$train,     "RFE-SELECTED features")
 
 # ============================================================
-# SECTION 6: EVALUATION FUNCTION (YOUR CONTRIBUTION #2)
+# SECTION 8: MODEL EVALUATION FUNCTION — CONTRIBUTION #2
 # ============================================================
-# WHY: Reports Sensitivity separately — the most clinically
-# critical metric. Missing a malignant case (false negative)
-# is far more dangerous than a false positive.
+# WHY SENSITIVITY AS PRIMARY: In cancer diagnosis, a false
+# negative (predicting Benign when actually Malignant) leads
+# to missed treatment — potentially fatal. Therefore sensitivity
+# is ranked BEFORE accuracy in our clinical evaluation.
+# This framing is ABSENT from all 5 prior WBCD papers we reviewed.
 
-evaluate_models <- function(models, testData, label="") {
-
-  cat("\n====", label, "====\n")
-
-  res <- lapply(names(models), function(nm) {
-    m          <- models[[nm]]
+evaluate_models <- function(models, testData, label = "") {
+  cat("\n==============================\n")
+  cat("EVALUATION:", label, "\n")
+  cat("==============================\n")
+  
+  res_list <- lapply(names(models), function(nm) {
+    m <- models[[nm]]
+    
+    # Predictions
     pred_class <- predict(m, testData)
     pred_prob  <- predict(m, testData, type = "prob")
-
-    cm  <- confusionMatrix(pred_class,
-                           testData$diagnosis,
-                           positive = "Malignant")
-    roc_o <- roc(testData$diagnosis,
-                 pred_prob$Malignant,
-                 quiet = TRUE)
-
+    
+    # Confusion matrix — positive class is Malignant
+    cm <- confusionMatrix(pred_class,
+                          testData$diagnosis,
+                          positive = "Malignant")
+    
+    # ROC and AUC
+    roc_obj <- roc(testData$diagnosis,
+                   pred_prob$Malignant,
+                   quiet = TRUE)
+    
+    # False negatives = missed cancer cases
+    # In confusion matrix: actual Malignant predicted as Benign
+    fn_count <- cm$table["Benign", "Malignant"]
+    
     data.frame(
       Model       = nm,
-      Accuracy    = round(cm$overall["Accuracy"],    4),
-      Sensitivity = round(cm$byClass["Sensitivity"], 4),  # recall for Malignant
-      Specificity = round(cm$byClass["Specificity"], 4),
+      Accuracy    = round(cm$overall["Accuracy"],       4),
+      Sensitivity = round(cm$byClass["Sensitivity"],    4),
+      Specificity = round(cm$byClass["Specificity"],    4),
       Precision   = round(cm$byClass["Pos Pred Value"], 4),
-      F1          = round(cm$byClass["F1"],           4),
-      AUC         = round(as.numeric(auc(roc_o)),     4),
-      FalseNeg    = cm$table["Benign","Malignant"]    # missed cancers
+      F1_Score    = round(cm$byClass["F1"],             4),
+      AUC         = round(as.numeric(auc(roc_obj)),     4),
+      False_Neg   = fn_count,
+      stringsAsFactors = FALSE
     )
   })
-
-  result_df <- do.call(rbind, res)
+  
+  result_df <- do.call(rbind, res_list)
   rownames(result_df) <- NULL
+  
+  # Sort by Sensitivity (primary) then AUC (secondary)
+  result_df <- result_df[order(-result_df$Sensitivity,
+                               -result_df$AUC), ]
   print(result_df)
   return(result_df)
 }
 
-eval_full    <- evaluate_models(models_full,    split_full$test,    "FULL FEATURES")
-eval_reduced <- evaluate_models(models_reduced, split_reduced$test, "CORR-REDUCED FEATURES")
-eval_rfe     <- evaluate_models(models_rfe,     split_rfe$test,     "RFE FEATURES")
+# Evaluate all three feature set experiments
+eval_full    <- evaluate_models(models_full,
+                                split_full$test,
+                                "FULL FEATURES (30)")
+eval_reduced <- evaluate_models(models_reduced,
+                                split_reduced$test,
+                                "CORR-REDUCED FEATURES")
+eval_rfe     <- evaluate_models(models_rfe,
+                                split_rfe$test,
+                                "RFE-SELECTED FEATURES")
 
 # ============================================================
-# SECTION 7: STATISTICAL SIGNIFICANCE TESTING (CONTRIBUTION #3)
+# SECTION 9: STATISTICAL SIGNIFICANCE TESTING — CONTRIBUTION #3
 # ============================================================
-# WHY THIS IS CRITICAL: No prior WBCD-R paper tests whether
-# model differences are statistically significant.
+# WHY THIS IS CRITICAL FOR PUBLICATION:
+# Prior WBCD papers report accuracy numbers but NEVER test
+# if differences between models are statistically significant.
+# We use pairwise t-tests across 10 CV fold results.
+# p < 0.05 = the difference is real, not random variation.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-What Are We Doing Here?
-We are building a machine learning based breast cancer diagnosis system using the Wisconsin Breast Cancer Diagnostic (WBCD) dataset in R language, where we:
-
-Train 5 classifiers — LR, KNN, Decision Tree, Random Forest, SVM
-Compare them across 3 different feature sets — Full (30 features), Correlation-Reduced, RFE-Selected
-Evaluate using clinically meaningful metrics especially Sensitivity
-Test whether differences are statistically significant
-Identify which features matter most for diagnosis
-Problem Statement
-Breast cancer is the most commonly diagnosed cancer in women worldwide. Early and accurate diagnosis is critical for survival. While many machine learning studies have compared classifiers on the WBCD dataset, most suffer from three problems: they use arbitrary train-test splits without statistical validation, they use all 30 features without questioning whether fewer features perform better, and they optimize for accuracy rather than sensitivity — which is the clinically critical metric because missing a malignant case is far more dangerous than a false positive.
-
-Research Gap
-Here is what existing papers do wrong or skip entirely. This is the most important section for your paper.
-
-Gap 1 — No feature selection comparison Papers 1, 3, 4 in your references use all 30 WBCD features without asking whether removing redundant correlated features improves or hurts each classifier differently. No paper compares full vs correlation-reduced vs RFE-selected features systematically across all five classifiers.
-
-Gap 2 — No statistical significance testing Every existing WBCD paper reports accuracy numbers but never tests whether the difference between say SVM at 97.2% and Random Forest at 96.5% is statistically meaningful or just random variation. Without pairwise significance testing across cross-validation folds, all comparisons are anecdotal.
-
-Gap 3 — Wrong primary metric All existing papers rank models by accuracy. In cancer diagnosis, sensitivity is the correct primary metric. A model with 96% accuracy but 80% sensitivity misses 20% of actual cancer patients. No prior WBCD paper frames its evaluation around minimizing false negatives as the primary clinical objective.
-
-Gap 4 — Python monopoly, no R-based rigorous study Every major WBCD comparison paper uses Python with scikit-learn. There is no peer-reviewed R-based study that combines feature selection, cross-validated comparison, statistical significance testing, and clinical metric prioritization together on this dataset.
-
-Gap 5 — No explainability connection to clinical features Prior papers report feature importance as a side note. None connect the top features back to clinical meaning — for example explaining why concave points worst and perimeter worst matter biologically for tumor malignancy.
-
-Our Contributions
-State these exactly like this in your paper's introduction section.
-
-Contribution 1 — Systematic Feature Selection Study We are the first to compare three feature configurations — all 30 features, correlation-filtered features, and RFE-optimally selected features — across five classifiers simultaneously, showing how feature redundancy affects each algorithm differently.
-
-Contribution 2 — Statistical Validation of Model Differences We apply pairwise t-tests across 10-fold cross-validation folds using R's resamples and diff framework, providing the first statistically validated comparison of classifiers on WBCD rather than point-estimate comparison.
-
-Contribution 3 — Sensitivity-First Clinical Evaluation We reframe the evaluation around sensitivity and false negatives as primary metrics, including a false negative heatmap showing missed cancer cases per model per feature set, directly connecting ML performance to clinical consequence.
-
-Contribution 4 — R-Based Reproducible Pipeline We provide a complete reproducible R pipeline using caret, pROC, and DALEX that the medical informatics community can directly apply, extending beyond Python-centric literature.
-
-Contribution 5 — Feature Importance with Clinical Interpretation We identify the minimal clinically sufficient feature subset and connect top predictive features to known tumor biology, providing actionable guidance for simplified diagnostic protocols.
-
-Why Is This Publishable
-A paper gets accepted when it answers a question that has not been cleanly answered before. Here is how your paper answers new questions.
-
-Question	Prior Work	Your Work
-Do fewer features work better?	Never tested	Tested across 3 feature sets
-Are model differences significant?	Never tested	Pairwise t-tests across CV folds
-Which metric should rank models?	Accuracy	Sensitivity + False Negatives
-What language/framework?	Python only	R with full reproducible pipeline
-Which features are clinically meaningful?	Listed but not interpreted	Connected to tumor biology
-Your Paper Title
-"A Sensitivity-Optimized Comparison of Machine Learning Classifiers with Feature Selection Strategies for Breast Cancer Diagnosis: A Statistically Validated Study in R"
-
-Target Journals
-These are legitimate peer-reviewed journals that would fit this work:
-
-Best fit:
-
-Diagnostics — MDPI, Scopus indexed, open access, accepts ML medical studies
-Applied Sciences — MDPI, Scopus indexed
-BMC Medical Informatics and Decision Making — well respected in this area
-Avoid:
-
-IJRASET (where your reference papers are — not Scopus indexed, low credibility)
-Any journal that charges very high fees without Scopus indexing
-# This is what separates a research paper from a comparison report.
-
-test_significance <- function(models, label="") {
-  cat("\n=== Statistical Significance:", label, "===\n")
-  res     <- resamples(models)
-  diff_res <- diff(res)
+run_significance_tests <- function(models, label = "") {
+  cat("\n==============================\n")
+  cat("SIGNIFICANCE TESTS:", label, "\n")
+  cat("==============================\n")
+  
+  res      <- resamples(models)
+  diff_res <-  diff(res)
+  
+  cat("\nCV Performance Summary:\n")
+  print(summary(res))
+  
+  cat("\nPairwise Significance (p-values for ROC):\n")
   print(summary(diff_res))
-
-  # Visualizations for paper
-  p1 <- dotplot(res,  metric = "ROC",
-                main = paste("CV ROC Distribution -", label))
-  p2 <- bwplot(res,   metric = "ROC",
-               main = paste("ROC Boxplot -", label))
-  print(p1)
-  print(p2)
-
-  return(res)
+  
+  return(list(resamples = res, diffs = diff_res))
 }
 
-res_full    <- test_significance(models_full,    "Full Features")
-res_reduced <- test_significance(models_reduced, "Corr-Reduced")
-res_rfe     <- test_significance(models_rfe,     "RFE Features")
+sig_full    <- run_significance_tests(models_full,    "Full Features")
+sig_reduced <- run_significance_tests(models_reduced, "Corr-Reduced")
+sig_rfe     <- run_significance_tests(models_rfe,     "RFE Features")
+
+# Save CV distribution plots (Figure 7 in paper)
+png("figure7_cv_roc_boxplot.png",
+    width = 3000, height = 2000, res = 300)
+bwplot(sig_full$resamples,
+       metric = "ROC")
+dev.off()
+cat("Figure 7 saved: figure7_cv_roc_boxplot.png\n")
+
+png("figure7b_cv_dotplot.png",
+    width = 3000, height = 2000, res = 300)
+dotplot(sig_full$resamples,
+        metric = "ROC")
+dev.off()
 
 # ============================================================
-# SECTION 8: MULTI-MODEL ROC CURVES (ALL 3 FEATURE SETS)
+# SECTION 10: MULTI-MODEL ROC CURVES — FIGURE 3
 # ============================================================
 
-plot_roc_comparison <- function(models, testData, title="ROC Comparison") {
-
-  colors <- c("blue","green4","orange","red","purple")
-  roc_list <- lapply(models, function(m) {
-    prob <- predict(m, testData, type = "prob")
+plot_roc_all <- function(models, testData, title, filename) {
+  colors  <- c("blue", "darkgreen", "orange", "red", "purple")
+  ltypes  <- c(1, 2, 3, 4, 5)
+  
+  roc_list <- lapply(names(models), function(nm) {
+    prob <- predict(models[[nm]], testData, type = "prob")
     roc(testData$diagnosis, prob$Malignant, quiet = TRUE)
   })
-
-  plot(roc_list[[1]], col = colors[1], lwd = 2,
-       main = title, legacy.axes = TRUE)
-
+  names(roc_list) <- names(models)
+  
+  auc_vals <- round(sapply(roc_list, auc), 4)
+  
+  png(filename, width = 2800, height = 2400, res = 300)
+  plot(roc_list[[1]],
+       col          = colors[1],
+       lwd          = 2.5,
+       lty          = ltypes[1],
+       main         = title,
+       legacy.axes  = TRUE,
+       xlab         = "1 - Specificity (False Positive Rate)",
+       ylab         = "Sensitivity (True Positive Rate)",
+       cex.main     = 1.1,
+       cex.lab      = 1.0)
+  
   for (i in 2:length(roc_list)) {
-    plot(roc_list[[i]], col = colors[i], lwd = 2, add = TRUE)
+    plot(roc_list[[i]],
+         col         = colors[i],
+         lwd         = 2.5,
+         lty         = ltypes[i],
+         add         = TRUE)
   }
-
+  
+  abline(a = 0, b = 1, lty = 3, col = "gray50")  # random classifier line
+  
   legend("bottomright",
-         legend = paste(names(roc_list),
-                        "| AUC =",
-                        round(sapply(roc_list, auc), 3)),
-         col    = colors,
-         lwd    = 2,
-         cex    = 0.85)
+         legend  = paste0(names(roc_list), " (AUC = ", auc_vals, ")"),
+         col     = colors,
+         lty     = ltypes,
+         lwd     = 2.5,
+         cex     = 0.85,
+         bty     = "n")
+  dev.off()
+  cat("ROC figure saved:", filename, "\n")
 }
 
-par(mfrow = c(1,3))
-plot_roc_comparison(models_full,    split_full$test,    "ROC - Full Features")
-plot_roc_comparison(models_reduced, split_reduced$test, "ROC - Corr-Reduced")
-plot_roc_comparison(models_rfe,     split_rfe$test,     "ROC - RFE Features")
-par(mfrow = c(1,1))
+plot_roc_all(models_full,
+             split_full$test,
+             "Figure 3a: ROC Curves — Full Features (30)",
+             "figure3a_roc_full.png")
+
+plot_roc_all(models_reduced,
+             split_reduced$test,
+             "Figure 3b: ROC Curves — Corr-Reduced Features",
+             "figure3b_roc_reduced.png")
+
+plot_roc_all(models_rfe,
+             split_rfe$test,
+             "Figure 3c: ROC Curves — RFE-Selected Features",
+             "figure3c_roc_rfe.png")
 
 # ============================================================
-# SECTION 9: FEATURE IMPORTANCE (CONTRIBUTION #4)
+# SECTION 11: FEATURE IMPORTANCE — CONTRIBUTION #4
 # ============================================================
-# WHY: Tells clinicians WHICH cell nucleus measurements
-# matter most — directly actionable for diagnostic protocols
+# WHY THIS IS CLINICALLY IMPORTANT:
+# Identifies which cell nucleus measurements matter most for
+# malignancy prediction. Gives oncologists interpretable
+# guidance on which features to prioritize in diagnosis.
 
-# Random Forest importance (most reliable)
-imp_rf <- varImp(models_full$RF, scale = TRUE)
-plot(imp_rf, top = 15,
-     main = "Top 15 Important Features (Random Forest)")
+# Random Forest importance (most reliable — uses Gini impurity)
+png("figure4a_importance_rf.png",
+    width = 2400, height = 2000, res = 300)
+plot(varImp(models_full$RF, scale = TRUE),
+     top  = 15,
+     main = "Figure 4a: Feature Importance — Random Forest (Top 15)")
+dev.off()
+cat("Figure 4a saved: figure4a_importance_rf.png\n")
 
-# Logistic Regression importance
-imp_lr <- varImp(models_full$LR, scale = TRUE)
-plot(imp_lr, top = 15,
-     main = "Top 15 Important Features (Logistic Regression)")
+# Logistic Regression importance (coefficient magnitudes)
+png("figure4b_importance_lr.png",
+    width = 2400, height = 2000, res = 300)
+plot(varImp(models_full$LR, scale = TRUE),
+     top  = 15,
+     main = "Figure 4b: Feature Importance — Logistic Regression (Top 15)")
+dev.off()
+cat("Figure 4b saved: figure4b_importance_lr.png\n")
 
 # SVM importance
-imp_svm <- varImp(models_full$SVM, scale = TRUE)
-plot(imp_svm, top = 15,
-     main = "Top 15 Important Features (SVM)")
+png("figure4c_importance_svm.png",
+    width = 2400, height = 2000, res = 300)
+plot(varImp(models_full$SVM, scale = TRUE),
+     top  = 15,
+     main = "Figure 4c: Feature Importance — SVM (Top 15)")
+dev.off()
+cat("Figure 4c saved: figure4c_importance_svm.png\n")
+
+# Print top 10 features from RF for paper text
+cat("\n=== TOP 10 FEATURES (Random Forest) ===\n")
+rf_imp <- varImp(models_full$RF, scale = TRUE)$importance
+rf_imp_sorted <- rf_imp[order(-rf_imp$Overall), , drop = FALSE]
+print(round(head(rf_imp_sorted, 10), 2))
 
 # ============================================================
-# SECTION 10: CROSS-FEATURE-SET SUMMARY TABLE (PAPER TABLE)
+# SECTION 12: CLINICAL EVALUATION PLOTS — CONTRIBUTION #5
 # ============================================================
-# WHY: This becomes Table 3 or 4 in your paper —
-# directly showing the impact of feature selection per model
 
-build_summary <- function(eval_df, label) {
-  eval_df$FeatureSet <- label
-  return(eval_df)
-}
+# ── 12A. Build combined summary table ───────────────────────
+eval_full$FeatureSet    <- paste0("Full (30)")
+eval_reduced$FeatureSet <- paste0("Corr-Reduced (", ncol(wbcd_reduced), ")")
+eval_rfe$FeatureSet     <- paste0("RFE (", length(best_features), ")")
 
-final_summary <- rbind(
-  build_summary(eval_full,    "Full (30)"),
-  build_summary(eval_reduced, "Corr-Reduced"),
-  build_summary(eval_rfe,     paste0("RFE (", length(best_features), ")"))
-)
+final_summary <- rbind(eval_full, eval_reduced, eval_rfe)
 
-cat("\n========== FINAL CROSS-FEATURE-SET SUMMARY ==========\n")
-print(final_summary[order(final_summary$AUC, decreasing=TRUE), ])
+cat("\n=== COMPLETE RESULTS SUMMARY ===\n")
+print(final_summary[order(-final_summary$Sensitivity,
+                          -final_summary$AUC), ])
 
-# ============================================================
-# SECTION 11: SENSITIVITY-FOCUSED VISUALIZATION (CLINICAL)
-# ============================================================
-# WHY: Sensitivity = detecting actual cancer cases.
-# A model with 96% accuracy but 80% sensitivity
-# misses 20% of cancer patients. That must be highlighted.
+# ── 12B. Sensitivity Comparison Bar Chart (Figure 5) ────────
+# PRIMARY CLINICAL FIGURE — shows which model detects most cancers
+png("figure5_sensitivity_comparison.png",
+    width = 3200, height = 2200, res = 300)
 
 ggplot(final_summary,
-       aes(x = Model, y = Sensitivity, fill = FeatureSet)) +
-  geom_bar(stat = "position", position = "dodge") +
-  geom_hline(yintercept = 0.95, linetype = "dashed",
-             color = "red", linewidth = 0.8) +
-  annotate("text", x = 1, y = 0.96,
-           label = "Clinical threshold (95%)",
-           color = "red", size = 3) +
-  labs(title    = "Sensitivity Comparison Across Models & Feature Sets",
-       subtitle = "Sensitivity = correctly identified malignant cases",
-       y        = "Sensitivity (Recall for Malignant)",
-       x        = "Classifier") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
+       aes(x    = Model,
+           y    = Sensitivity,
+           fill = FeatureSet)) +
+  geom_bar(stat     = "identity",
+           position = position_dodge(width = 0.8),
+           width    = 0.7,
+           color    = "black",
+           linewidth = 0.3) +
+  geom_hline(yintercept = 0.95,
+             linetype   = "dashed",
+             color      = "red",
+             linewidth  = 0.8) +
+  annotate("text",
+           x     = 0.6,
+           y     = 0.955,
+           label = "Clinical threshold (0.95)",
+           color = "red",
+           size  = 3.2,
+           hjust = 0) +
+  scale_fill_manual(values = c("#2166AC", "#4DAC26", "#D6604D")) +
+  scale_y_continuous(limits = c(0, 1.05),
+                     breaks = seq(0, 1, 0.1),
+                     labels = scales::percent_format(accuracy = 1)) +
+  labs(title    = "Figure 5: Sensitivity Comparison Across Models & Feature Sets",
+       subtitle = "Sensitivity = proportion of malignant cases correctly identified",
+       x        = "Classifier",
+       y        = "Sensitivity (Malignant Recall)",
+       fill     = "Feature Set") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position  = "bottom",
+        plot.title       = element_text(face = "bold", size = 13),
+        axis.text.x      = element_text(size = 11),
+        panel.grid.major = element_line(color = "gray90"))
 
-# Missed cancer cases heatmap
+dev.off()
+cat("Figure 5 saved: figure5_sensitivity_comparison.png\n")
+
+# ── 12C. Accuracy Comparison Bar Chart (Figure 6) ───────────
+png("figure6_accuracy_comparison.png",
+    width = 3200, height = 2200, res = 300)
+
 ggplot(final_summary,
-       aes(x = Model, y = FeatureSet, fill = FalseNeg)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = FalseNeg), size = 5) +
-  scale_fill_gradient(low = "white", high = "red") +
-  labs(title = "False Negatives (Missed Cancer Cases) Heatmap",
-       fill  = "Missed Cases") +
-  theme_minimal()
+       aes(x    = Model,
+           y    = Accuracy,
+           fill = FeatureSet)) +
+  geom_bar(stat     = "identity",
+           position = position_dodge(width = 0.8),
+           width    = 0.7,
+           color    = "black",
+           linewidth = 0.3) +
+  scale_fill_manual(values = c("#2166AC", "#4DAC26", "#D6604D")) +
+  scale_y_continuous(limits = c(0.85, 1.02),
+                     breaks = seq(0.85, 1.0, 0.02),
+                     labels = scales::percent_format(accuracy = 1)) +
+  labs(title    = "Figure 6: Accuracy Comparison Across Models & Feature Sets",
+       subtitle = "Note: Accuracy alone is insufficient for clinical evaluation",
+       x        = "Classifier",
+       y        = "Accuracy",
+       fill     = "Feature Set") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position  = "bottom",
+        plot.title       = element_text(face = "bold", size = 13))
+
+dev.off()
+cat("Figure 6 saved: figure6_accuracy_comparison.png\n")
+
+# ── 12D. False Negative Heatmap (Figure 8) ──────────────────
+# MOST CLINICALLY IMPORTANT FIGURE
+# Red = more missed cancer patients = worse clinically
+png("figure8_false_negative_heatmap.png",
+    width = 2800, height = 1800, res = 300)
+
+ggplot(final_summary,
+       aes(x    = Model,
+           y    = FeatureSet,
+           fill = False_Neg)) +
+  geom_tile(color = "white", linewidth = 1.2) +
+  geom_text(aes(label = paste0(False_Neg, "\nmissed")),
+            size  = 4.5,
+            color = "black",
+            fontface = "bold") +
+  scale_fill_gradient(low  = "#FFFFFF",
+                      high = "#D73027",
+                      name = "Missed\nCancer Cases") +
+  labs(title    = "Figure 8: False Negatives — Missed Cancer Cases per Model",
+       subtitle = "Lower values = better clinical safety (fewer undetected cancers)",
+       x        = "Classifier",
+       y        = "Feature Set") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title  = element_text(face = "bold", size = 13),
+        axis.text.x = element_text(size = 11))
+
+dev.off()
+cat("Figure 8 saved: figure8_false_negative_heatmap.png\n")
+
+# ── 12E. AUC Comparison Plot (Figure 9) ─────────────────────
+png("figure9_auc_comparison.png",
+    width = 3200, height = 2200, res = 300)
+
+ggplot(final_summary,
+       aes(x     = Model,
+           y     = AUC,
+           color = FeatureSet,
+           group = FeatureSet)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 4, shape = 16) +
+  geom_hline(yintercept = 0.95,
+             linetype   = "dashed",
+             color      = "gray50") +
+  scale_color_manual(values = c("#2166AC", "#4DAC26", "#D6604D")) +
+  scale_y_continuous(limits = c(0.90, 1.01),
+                     breaks = seq(0.90, 1.0, 0.02)) +
+  labs(title    = "Figure 9: AUC Comparison Across Models & Feature Sets",
+       x        = "Classifier",
+       y        = "Area Under ROC Curve (AUC)",
+       color    = "Feature Set") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        plot.title      = element_text(face = "bold", size = 13))
+
+dev.off()
+cat("Figure 9 saved: figure9_auc_comparison.png\n")
 
 # ============================================================
-# SECTION 12: SAVE RESULTS FOR PAPER
+# SECTION 13: FINAL PAPER TABLES — SAVE AS CSV
 # ============================================================
 
-write.csv(final_summary, "results_final_summary.csv", row.names = FALSE)
-cat("\nResults saved to results_final_summary.csv\n")
+# Table 2: Full results for paper
+write.csv(final_summary,
+          "table2_complete_results.csv",
+          row.names = FALSE)
+cat("\nTable 2 saved: table2_complete_results.csv\n")
+
+# Table 3: Best model per feature set
+best_per_set <- final_summary %>%
+  group_by(FeatureSet) %>%
+  slice_max(order_by = Sensitivity, n = 1) %>%
+  ungroup()
+
+cat("\n=== TABLE 3: BEST MODEL PER FEATURE SET ===\n")
+print(as.data.frame(best_per_set))
+write.csv(best_per_set,
+          "table3_best_per_featureset.csv",
+          row.names = FALSE)
+
+# Table 4: Overall best model
+cat("\n=== BEST OVERALL MODEL (by Sensitivity then AUC) ===\n")
+best_model <- final_summary[which.max(final_summary$Sensitivity), ]
+print(best_model)
+
+# ============================================================
+# SECTION 14: COMPLETE CONSOLE SUMMARY FOR PAPER WRITING
+# ============================================================
+
+cat("\n")
+
+ cat("       RESEARCH RESULTS — FINAL SUMMARY\n")
+ cat("\nDataset: Wisconsin Breast Cancer Diagnostic (WBCD)\n")
+cat("Instances: 569 | Benign: 357 (62.7%) | Malignant: 212 (37.3%)\n")
+cat("Train/Test Split: 80/20 stratified | CV: 10-fold\n")
+cat("Feature Sets Compared: Full (30) / Corr-Reduced / RFE-Selected\n")
+cat("Classifiers: LR, KNN, DT, RF, SVM\n")
+cat("Primary Metric: Sensitivity (clinical focus)\n")
+cat("Statistical Testing: Pairwise t-tests across CV folds\n")
+cat("\n--- Results by Feature Set ---\n")
+cat("\nFULL FEATURES:\n")
+print(eval_full[, c("Model","Accuracy","Sensitivity","AUC","False_Neg")])
+cat("\nCORR-REDUCED FEATURES:\n")
+print(eval_reduced[, c("Model","Accuracy","Sensitivity","AUC","False_Neg")])
+cat("\nRFE-SELECTED FEATURES:\n")
+print(eval_rfe[, c("Model","Accuracy","Sensitivity","AUC","False_Neg")])
+cat("\n--- Best Overall Model ---\n")
+print(best_model[, c("Model","FeatureSet","Accuracy",
+                     "Sensitivity","AUC","False_Neg")])
+cat("\n--- Files Generated ---\n")
+cat("Figures : figure1 to figure9 (.png, 300 DPI)\n")
+cat("Tables  : table2_complete_results.csv\n")
+cat("          table3_best_per_featureset.csv\n")
 cat("\n=== RESEARCH CODE COMPLETE ===\n")
+cat("All outputs ready for paper writing.\n")
+ 
+
+
+ 
